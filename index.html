@@ -35,7 +35,7 @@
 
   #map{
     -webkit-flex:0 0 33vh; flex:0 0 33vh; min-height:150px; background:#fff;
-    border-bottom:2px solid #000;
+    border-bottom:2px solid #000; position:relative; overflow:hidden;
     -webkit-filter:grayscale(1) contrast(1.15) brightness(1.02);
     filter:grayscale(1) contrast(1.15) brightness(1.02);
   }
@@ -47,9 +47,17 @@
     font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;font-size:12px;
     text-align:center;padding:20px;opacity:.55;
   }
+  #mapInner{
+    position:absolute; top:0; left:0;
+    -webkit-transform-origin:50% 50%; transform-origin:50% 50%;
+    -webkit-transition:-webkit-transform .3s linear; transition:transform .3s linear;
+  }
+  #mapAttr{
+    position:absolute; right:4px; bottom:2px; z-index:1000; pointer-events:none;
+    font-size:9px; background:rgba(255,255,255,.85); color:#000; padding:0 4px;
+    font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
+  }
   .leaflet-container{background:#fff;font-family:inherit;}
-  .leaflet-control-attribution{font-size:9px;background:rgba(255,255,255,.85);color:#000;}
-  .leaflet-control-attribution a{color:#000;}
   .cursor{ width:34px;height:34px; -webkit-transform-origin:50% 50%; transform-origin:50% 50%;
            -webkit-transition:-webkit-transform .25s linear; transition:transform .25s linear; }
   .cursor svg{display:block;}
@@ -72,6 +80,28 @@
     padding:4px 8px;display:none;cursor:pointer;
   }
   #recenter.show{display:block;}
+  .hgroup{display:-webkit-flex;display:flex;-webkit-align-items:center;align-items:center;}
+  .hgroup > *{margin-left:6px;}
+  .hgroup > *:first-child{margin-left:0;}
+  .hbtn{
+    border:2px solid #000;background:#fff;
+    font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
+    font-size:9.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+    padding:4px 8px;cursor:pointer;
+  }
+  .hbtn.active{background:#000;color:#fff;}
+
+  #searchBar{display:none;border-bottom:2px solid #000;padding:8px var(--pad);}
+  #searchBar.show{display:-webkit-flex;display:flex;-webkit-align-items:center;align-items:center;}
+  #searchInput{
+    -webkit-flex:1 1 auto;flex:1 1 auto;border:2px solid #000;background:#fff;color:#000;
+    font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;font-size:13px;padding:7px 8px;
+  }
+  #searchBar button{
+    border:2px solid #000;background:#fff;margin-left:6px;
+    font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
+    font-size:11px;font-weight:700;padding:7px 10px;cursor:pointer;
+  }
 
   .speed{
     -webkit-flex:1 1 auto; flex:1 1 auto;
@@ -174,13 +204,23 @@
 <body>
 <div id="app">
 
-  <div id="map"></div>
+  <div id="map"><div id="mapInner"></div><div id="mapAttr">&copy; OpenStreetMap</div></div>
 
   <header>
     <span class="label" id="gpsText">GPS in attesa<span class="gps-dots" id="gpsDots"><i></i><i></i><i></i><i></i></span></span>
-    <button id="recenter">Centra</button>
+    <span class="hgroup">
+      <button id="recenter">Centra</button>
+      <button id="btnSearch" class="hbtn">Cerca</button>
+      <button id="btnPiste" class="hbtn">Piste</button>
+    </span>
     <span class="label" id="clock">--:--</span>
   </header>
+
+  <div id="searchBar">
+    <input id="searchInput" type="text" placeholder="Cerca un luogo…" autocomplete="off">
+    <button id="searchGo">Vai</button>
+    <button id="searchClose">Chiudi</button>
+  </div>
 
   <div id="msg"></div>
 
@@ -271,7 +311,8 @@ function boot(){
   var elSpeed=$("speed"), elTime=$("time"), elDist=$("dist"), elAvg=$("avg"),
       elAvgMov=$("avgMoving"), elMax=$("max"), elNote=$("speedNote"),
       elGps=$("gpsText"), elDots=$("gpsDots"), elMsg=$("msg"), elClock=$("clock"),
-      elMap=$("map"), elRecenter=$("recenter"), elHist=$("history"), elHistBody=$("histBody");
+      elMap=$("map"), elMapInner=$("mapInner"), elRecenter=$("recenter"),
+      elHist=$("history"), elHistBody=$("histBody");
 
   var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
               (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -312,9 +353,21 @@ function boot(){
       '<path d="M17 4 L26 27 L17 21 L8 27 Z" fill="#000" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>' +
     '</svg></div>';
 
+  function sizeMapInner(){
+    if (!map) return;
+    var w = elMap.clientWidth, h = elMap.clientHeight;
+    if (!w || !h) return;
+    var diag = Math.ceil(Math.sqrt(w*w+h*h)) + 60;
+    elMapInner.style.width = diag+"px";
+    elMapInner.style.height = diag+"px";
+    elMapInner.style.left = ((w-diag)/2)+"px";
+    elMapInner.style.top = ((h-diag)/2)+"px";
+    map.invalidateSize();
+  }
+
   if (typeof L !== "undefined"){
     try{
-      map = L.map("map",{zoomControl:false, attributionControl:true}).setView([41.9028,12.4964], 17);
+      map = L.map("mapInner",{zoomControl:false, attributionControl:false}).setView([41.9028,12.4964], 17);
       L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{
         maxZoom:19, attribution:"&copy; OpenStreetMap"
       }).addTo(map);
@@ -328,20 +381,29 @@ function boot(){
         followMap=true; elRecenter.className="";
         if (last) map.setView([last.lat,last.lon], 17, {animate:true});
       };
-      setTimeout(function(){ map.invalidateSize(); },300);
-      window.onresize = function(){ if (map) map.invalidateSize(); };
+      setTimeout(sizeMapInner,300);
+      window.onresize = function(){ sizeMapInner(); };
       window.addEventListener("orientationchange", function(){
-        setTimeout(function(){ if (map) map.invalidateSize(); },400);
+        setTimeout(sizeMapInner,400);
       });
     }catch(e){ map=null; }
   }
   if (!map){
     elMap.className="dead";
     elMap.innerHTML = "Mappa non disponibile senza connessione. Velocit&agrave;, tempo e distanza funzionano lo stesso.";
+    $("btnSearch").style.display="none";
+    $("btnPiste").style.display="none";
   }
-  function setCursorHeading(deg){
+  /* Il cursore resta sempre orientato verso l'alto: a ruotare, quando c'è
+     un rilevamento di direzione, è la mappa sottostante (mapInner). */
+  function setMapRotation(deg){
+    var t1 = "rotate("+(-deg)+"deg)";
+    elMapInner.style.webkitTransform = t1; elMapInner.style.transform = t1;
     var el=document.getElementById("cursorEl");
-    if (el){ el.style.webkitTransform="rotate("+deg+"deg)"; el.style.transform="rotate("+deg+"deg)"; }
+    if (el){
+      var t2 = "rotate("+deg+"deg)";
+      el.style.webkitTransform = t2; el.style.transform = t2;
+    }
   }
 
   /* ---------- matematica ---------- */
@@ -403,7 +465,7 @@ function boot(){
       meMarker.setLatLng([here.lat,here.lon]);
       if (followMap) map.setView([here.lat,here.lon], map.getZoom()<15?17:map.getZoom(), {animate:false});
     }
-    if (c.accuracy!=null && c.accuracy>40){ last = last||here; return; }
+    if (c.accuracy!=null && c.accuracy>65){ last = last||here; return; }
 
     if (last){
       var d=haversine(last,here), dt=(here.t-last.t)/1000;
@@ -433,7 +495,7 @@ function boot(){
         }
         if (c.heading!=null && !isNaN(c.heading) && speed>3){ heading=c.heading; }
         else if (d > 5){ heading=bearing(last,here); }
-        setCursorHeading(heading);
+        setMapRotation(heading);
       }
     }
     last=here;
@@ -528,6 +590,79 @@ function boot(){
     disarmReset(); clearRide();
     msg(ok ? "Uscita salvata nello storico."
            : "Salvata solo per questa sessione: il browser blocca la memoria locale.");
+  };
+
+  /* ---------- ricerca luoghi ---------- */
+  var btnSearch=$("btnSearch"), btnPiste=$("btnPiste"), elSearchBar=$("searchBar"),
+      elSearchInput=$("searchInput"), elSearchGo=$("searchGo"), elSearchClose=$("searchClose");
+  var searchMarker=null;
+
+  btnSearch.onclick = function(){
+    var open = elSearchBar.className.indexOf("show")>=0;
+    elSearchBar.className = open ? "" : "show";
+    if (!open) elSearchInput.focus();
+  };
+  elSearchClose.onclick = function(){ elSearchBar.className=""; };
+
+  function doSearch(){
+    var q = elSearchInput.value.replace(/^\s+|\s+$/g,"");
+    if (!q || !map) return;
+    if (typeof fetch === "undefined"){ msg("Ricerca non disponibile in questo browser."); return; }
+    msg("Ricerca in corso\u2026");
+    var url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&q="+
+              encodeURIComponent(q)+"&viewbox=12.25,42.05,12.75,41.65&bounded=0";
+    fetch(url).then(function(r){ return r.json(); }).then(function(res){
+      if (!res || !res.length){ msg("Nessun risultato per \u201c"+q+"\u201d."); return; }
+      var p=res[0], lat=parseFloat(p.lat), lon=parseFloat(p.lon);
+      if (searchMarker) map.removeLayer(searchMarker);
+      searchMarker = L.marker([lat,lon]).addTo(map);
+      followMap=false; elRecenter.className="show";
+      map.setView([lat,lon], 16, {animate:true});
+      elSearchBar.className=""; msg("");
+    })["catch"](function(){ msg("Ricerca non riuscita. Controlla la connessione."); });
+  }
+  elSearchGo.onclick = doSearch;
+  elSearchInput.onkeydown = function(ev){ if (ev.key==="Enter") doSearch(); };
+
+  /* ---------- piste ciclabili di Roma ---------- */
+  var cycleLayer=null, cycleLoaded=false, cycleLoading=false;
+  var ROME_BBOX = "41.65,12.25,42.05,12.75"; // sud,ovest,nord,est
+
+  btnPiste.onclick = function(){
+    if (!map) return;
+    if (typeof fetch === "undefined"){ msg("Funzione non disponibile in questo browser."); return; }
+    if (cycleLoaded){
+      if (map.hasLayer(cycleLayer)){ map.removeLayer(cycleLayer); btnPiste.className="hbtn"; }
+      else { cycleLayer.addTo(map); btnPiste.className="hbtn active"; }
+      return;
+    }
+    if (cycleLoading) return;
+    cycleLoading=true;
+    msg("Carico le piste ciclabili di Roma\u2026");
+    var q = "[out:json][timeout:25];way[\"highway\"=\"cycleway\"]("+ROME_BBOX+");out geom;";
+    fetch("https://overpass-api.de/api/interpreter?data="+encodeURIComponent(q))
+      .then(function(r){ return r.json(); })
+      .then(function(data){
+        var feats=[], i, j, el, coords;
+        for (i=0;i<data.elements.length;i++){
+          el = data.elements[i];
+          if (el.type==="way" && el.geometry && el.geometry.length>1){
+            coords=[];
+            for (j=0;j<el.geometry.length;j++) coords.push([el.geometry[j].lon, el.geometry[j].lat]);
+            feats.push({type:"Feature",properties:{},geometry:{type:"LineString",coordinates:coords}});
+          }
+        }
+        cycleLayer = L.geoJSON({type:"FeatureCollection",features:feats},{
+          style:{color:"#0a7d2c",weight:3,opacity:.85,dashArray:"4,4"}
+        }).addTo(map);
+        cycleLoaded=true; cycleLoading=false;
+        btnPiste.className="hbtn active";
+        msg(feats.length ? "Piste ciclabili di Roma caricate ("+feats.length+" tratti)."
+                          : "Nessuna pista ciclabile trovata nell'area.");
+      })["catch"](function(){
+        cycleLoading=false;
+        msg("Impossibile caricare le piste ciclabili. Controlla la connessione.");
+      });
   };
 
   /* ---------- vista storico ---------- */
