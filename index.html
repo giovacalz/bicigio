@@ -57,6 +57,26 @@
     font-size:9px; background:rgba(255,255,255,.85); color:#000; padding:0 4px;
     font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
   }
+  #navPopup{
+    position:absolute; top:10px; left:50%;
+    -webkit-transform:translateX(-50%); transform:translateX(-50%);
+    z-index:1100; background:#000; color:#fff; padding:9px 16px;
+    font-family:"Helvetica Neue",Helvetica,Arial,sans-serif; font-size:13px; font-weight:700;
+    text-align:center; max-width:85%; opacity:0; pointer-events:none;
+    -webkit-transition:opacity .25s; transition:opacity .25s;
+  }
+  #navPopup.show{opacity:1;}
+  #navBar{
+    display:none; border-bottom:2px solid #000; padding:8px var(--pad);
+    -webkit-align-items:center; align-items:center;
+    -webkit-justify-content:space-between; justify-content:space-between;
+  }
+  #navBar.show{display:-webkit-flex;display:flex;}
+  #navBar button{
+    border:2px solid #000;background:#fff;
+    font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
+    font-size:11px;font-weight:700;padding:6px 10px;cursor:pointer;
+  }
   .leaflet-container{background:#fff;font-family:inherit;}
   .cursor{ width:34px;height:34px; -webkit-transform-origin:50% 50%; transform-origin:50% 50%;
            -webkit-transition:-webkit-transform .25s linear; transition:transform .25s linear; }
@@ -101,6 +121,11 @@
     border:2px solid #000;background:#fff;margin-left:6px;
     font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;
     font-size:11px;font-weight:700;padding:7px 10px;cursor:pointer;
+  }
+  .navPopupBtn{
+    margin-top:8px; border:2px solid #000; background:#000; color:#fff;
+    font-family:"Helvetica Neue",Helvetica,Arial,sans-serif; font-size:12px; font-weight:700;
+    padding:7px 12px; cursor:pointer; display:block; width:100%;
   }
 
   .speed{
@@ -204,7 +229,7 @@
 <body>
 <div id="app">
 
-  <div id="map"><div id="mapInner"></div><div id="mapAttr">&copy; OpenStreetMap</div></div>
+  <div id="map"><div id="mapInner"></div><div id="mapAttr">&copy; OpenStreetMap</div><div id="navPopup"></div></div>
 
   <header>
     <span class="label" id="gpsText">GPS in attesa<span class="gps-dots" id="gpsDots"><i></i><i></i><i></i><i></i></span></span>
@@ -220,6 +245,11 @@
     <input id="searchInput" type="text" placeholder="Cerca un luogo…" autocomplete="off">
     <button id="searchGo">Vai</button>
     <button id="searchClose">Chiudi</button>
+  </div>
+
+  <div id="navBar">
+    <span class="label" id="navText">Navigazione in corso</span>
+    <button id="navStop">Termina</button>
   </div>
 
   <div id="msg"></div>
@@ -305,6 +335,7 @@ function boot(){
       maxSpeed=0, speed=0, heading=0, ascent=0, lastAlt=null, rideStart=null;
   var last=null, watchId=null, wakeLock=null, track=[];
   var map=null, meMarker=null, line=null, followMap=true, resetArmed=null;
+  var navActive=false, navRoute=null, navSteps=[], navStepIdx=0, navLine=null;
   var memRides = null; // fallback se lo storage è bloccato
 
   function $(id){ return document.getElementById(id); }
@@ -465,11 +496,19 @@ function boot(){
       meMarker.setLatLng([here.lat,here.lon]);
       if (followMap) map.setView([here.lat,here.lon], map.getZoom()<15?17:map.getZoom(), {animate:false});
     }
-    if (c.accuracy!=null && c.accuracy>65){ last = last||here; return; }
+
+    /* Prima si aggiornava 'last' SOLO quando la precisione era buona: se il
+       segnale peggiorava per qualche istante (tetti, alberi, canyon urbano)
+       'last' restava fermo su un punto vecchio, il salto successivo veniva
+       scartato (troppo tempo trascorso) e la distanza reale percorsa in quel
+       lasso di tempo andava persa, tenendo il tasto Salva bloccato più a
+       lungo del dovuto. Ora 'last' si aggiorna sempre, e solo l'accumulo di
+       distanza/velocità viene filtrato in base alla precisione del GPS. */
+    var accOk = (c.accuracy==null || c.accuracy<=65);
 
     if (last){
       var d=haversine(last,here), dt=(here.t-last.t)/1000;
-      if (dt>0.3 && dt<30){
+      if (accOk && dt>0.3 && dt<30){
         var fromGps = (c.speed!=null && c.speed>=0 && isFinite(c.speed)) ? c.speed*3.6 : null;
         var raw = fromGps!=null ? fromGps : (d/dt)*3.6;
 
@@ -480,7 +519,7 @@ function boot(){
         }
         if (running){
           if (speed > 1.5) movingMs += dt*1000;
-          if (d > Math.max(3,(c.accuracy||10)*0.6) && d/dt < 33){
+          if (d > Math.max(2,(c.accuracy||10)*0.5) && d/dt < 33){
             distance += d;
             track.push([Math.round(here.lat*1e5)/1e5, Math.round(here.lon*1e5)/1e5]);
             if (map) line.setLatLngs(track);
@@ -498,9 +537,21 @@ function boot(){
         setMapRotation(heading);
       }
     }
+
+    if (navActive && navSteps.length && navStepIdx<navSteps.length){
+      var target=navSteps[navStepIdx].point;
+      var dTarget=haversine(here, {lat:target[0], lon:target[1]});
+      if (dTarget < 25){
+        showNavPopup(navSteps[navStepIdx].text);
+        navStepIdx++;
+        if (navStepIdx>=navSteps.length) setTimeout(stopNav, 2200);
+      }
+    }
+
     last=here;
     render();
   }
+
 
   function onErr(err){
     if (err.code===1) msg(isIOS
@@ -572,24 +623,28 @@ function boot(){
   };
 
   btnSave.onclick = function(){
-    if (distance <= 50){ msg("Ancora troppo poco per salvare un'uscita."); return; }
-    if (running){ elapsed += Date.now()-startedAt; startedAt=Date.now(); }
-    var ride = {
-      id: String(Date.now()),
-      start: rideStart || new Date().toISOString(),
-      ms: totalMs(),
-      movingMs: movingMs,
-      dist: Math.round(distance),
-      max: Math.round(maxSpeed*10)/10,
-      ascent: Math.round(ascent),
-      track: thin(track, 400)
-    };
-    var rides = loadRides();
-    rides.unshift(ride);
-    var ok = storeRides(rides);
-    disarmReset(); clearRide();
-    msg(ok ? "Uscita salvata nello storico."
-           : "Salvata solo per questa sessione: il browser blocca la memoria locale.");
+    try{
+      if (distance <= 50){ msg("Ancora troppo poco per salvare un'uscita (servono almeno 50 m)."); return; }
+      if (running){ elapsed += Date.now()-startedAt; startedAt=Date.now(); }
+      var ride = {
+        id: String(Date.now()),
+        start: rideStart || new Date().toISOString(),
+        ms: totalMs(),
+        movingMs: movingMs,
+        dist: Math.round(distance),
+        max: Math.round(maxSpeed*10)/10,
+        ascent: Math.round(ascent),
+        track: thin(track, 400)
+      };
+      var rides = loadRides();
+      rides.unshift(ride);
+      var ok = storeRides(rides);
+      disarmReset(); clearRide();
+      msg(ok ? "Uscita salvata nello storico."
+             : "Salvata solo per questa sessione: il browser blocca la memoria locale.");
+    }catch(e){
+      msg("Errore durante il salvataggio: "+(e && e.message ? e.message : e));
+    }
   };
 
   /* ---------- ricerca luoghi ---------- */
@@ -653,7 +708,23 @@ function boot(){
           }
         }
         cycleLayer = L.geoJSON({type:"FeatureCollection",features:feats},{
-          style:{color:"#0a7d2c",weight:3,opacity:.85,dashArray:"4,4"}
+          style:{color:"#0a7d2c",weight:3,opacity:.85,dashArray:"4,4"},
+          onEachFeature:function(feature, layer){
+            layer.on("click", function(ev){
+              if (navActive) return;
+              var html = '<div style="font-family:\'Helvetica Neue\',Helvetica,Arial,sans-serif;'+
+                         'font-size:12px;max-width:180px;">Percorrere questa pista ciclabile?'+
+                         '<button class="navPopupBtn">Naviga qui</button></div>';
+              layer.bindPopup(html).openPopup(ev.latlng);
+              layer.once("popupopen", function(){
+                var btn = document.querySelector(".leaflet-popup-content .navPopupBtn");
+                if (btn) btn.onclick = function(){
+                  layer.closePopup();
+                  startNav(feature.geometry.coordinates);
+                };
+              });
+            });
+          }
         }).addTo(map);
         cycleLoaded=true; cycleLoading=false;
         btnPiste.className="hbtn active";
@@ -664,6 +735,64 @@ function boot(){
         msg("Impossibile caricare le piste ciclabili. Controlla la connessione.");
       });
   };
+
+  /* ---------- navigazione turn-by-turn su una pista selezionata ---------- */
+  var elNavPopup=$("navPopup"), elNavBar=$("navBar"), elNavText=$("navText"), btnNavStop=$("navStop");
+  var navPopupTimer=null;
+
+  function showNavPopup(text){
+    elNavPopup.innerHTML = text;
+    elNavPopup.className = "show";
+    clearTimeout(navPopupTimer);
+    navPopupTimer = setTimeout(function(){ elNavPopup.className=""; }, 2000);
+  }
+
+  function bearingDiff(b1,b2){ return ((b2-b1+540)%360)-180; }
+
+  function buildNavSteps(route){
+    var steps=[], i, bIn, bOut, diff, text;
+    for (i=1;i<route.length-1;i++){
+      bIn = bearing({lat:route[i-1][0],lon:route[i-1][1]}, {lat:route[i][0],lon:route[i][1]});
+      bOut = bearing({lat:route[i][0],lon:route[i][1]}, {lat:route[i+1][0],lon:route[i+1][1]});
+      diff = bearingDiff(bIn,bOut);
+      text = null;
+      if (diff > 30) text = "Tra poco: gira a destra";
+      else if (diff < -30) text = "Tra poco: gira a sinistra";
+      if (text) steps.push({point:route[i], text:text});
+    }
+    steps.push({point:route[route.length-1], text:"Sei arrivato: fine della pista."});
+    return steps;
+  }
+
+  function startNav(lonlatCoords){
+    if (!map || !lonlatCoords || lonlatCoords.length<2) return;
+    var route=[], i;
+    for (i=0;i<lonlatCoords.length;i++) route.push([lonlatCoords[i][1], lonlatCoords[i][0]]);
+    if (last){
+      var dStart=haversine(last,{lat:route[0][0],lon:route[0][1]});
+      var dEnd=haversine(last,{lat:route[route.length-1][0],lon:route[route.length-1][1]});
+      if (dEnd < dStart) route.reverse();
+    }
+    navRoute = route;
+    navSteps = buildNavSteps(route);
+    navStepIdx = 0;
+    navActive = true;
+    if (navLine) map.removeLayer(navLine);
+    navLine = L.polyline(route, {color:"#0057d8", weight:5, opacity:.9}).addTo(map);
+    followMap = true; elRecenter.className = "";
+    map.fitBounds(navLine.getBounds(), {padding:[30,30]});
+    elNavBar.className = "show";
+    elNavText.innerHTML = "Navigazione sulla pista in corso";
+    showNavPopup("Percorso avviato: segui la traccia blu.");
+  }
+
+  function stopNav(){
+    navActive=false; navRoute=null; navSteps=[]; navStepIdx=0;
+    if (navLine && map){ map.removeLayer(navLine); }
+    navLine=null;
+    elNavBar.className="";
+  }
+  btnNavStop.onclick = stopNav;
 
   /* ---------- vista storico ---------- */
   btnHist.onclick = function(){ renderHistory(); elHist.className="show"; };
